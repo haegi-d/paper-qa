@@ -25,10 +25,24 @@ from .qaprompts import (citation_prompt, make_chain, qa_prompt, search_prompt,
 from .readers import read_doc
 from .types import Answer, Context
 from .utils import maybe_is_text, md5sum
+# import pickle
 
 os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
 langchain.llm_cache = SQLiteCache(CACHE_PATH)
 
+def create_mla_citation(citation_dict: dict
+                        ) -> str:
+    citation_parts = []
+    citation_parts.append(f"{extract_first_author(citation_dict)} et al.,")
+    citation_parts.append(f"\"{citation_dict['title']}\",")
+    citation_parts.append(f"*{citation_dict['journal']}*,")
+    citation_parts.append(f"({citation_dict['year']}),")
+    citation_parts.append(f"{citation_dict['creationdate']},")
+    citation_parts.append(f"{citation_dict['owner']}")
+
+    mla_citation = " ".join(citation_parts)
+
+    return mla_citation
 
 class Docs:
     """A collection of documents to be used for answering questions."""
@@ -55,7 +69,7 @@ class Docs:
         self.docs = dict()
         self.chunk_size_limit = chunk_size_limit
         self.keys = set()
-        self._faiss_index = None
+        self._faiss_index = None # type: Optional[FAISS]
         self._doc_index = None
         self.update_llm(llm, summary_llm)
         if index_path is None:
@@ -65,6 +79,7 @@ class Docs:
         if embeddings is None:
             embeddings = OpenAIEmbeddings()
         self.embeddings = embeddings
+        
 
     def update_llm(
         self,
@@ -75,19 +90,32 @@ class Docs:
         if llm is None:
             llm = "gpt-3.5-turbo"
         if type(llm) is str:
-            llm = ChatOpenAI(temperature=0.1, model=llm)
+            llm = ChatOpenAI(temperature=0.1, model_name=llm)
         if type(summary_llm) is str:
-            summary_llm = ChatOpenAI(temperature=0.1, model=summary_llm)
+            summary_llm = ChatOpenAI(temperature=0.1, model_name=summary_llm)
         self.llm = llm
         if summary_llm is None:
             summary_llm = llm
         self.summary_llm = summary_llm
 
+    def add_from_RefDB(self, 
+                       citation_dict: dict,
+                       disable_check: bool = False,
+                       chunk_chars: Optional[int] = 3000,
+    ) -> None:
+        """Add a document to the collection from a citation_dict out of reference database."""
+        path = citation_dict['file']
+        citation = create_mla_citation(citation_dict)
+        key = citation_dict['ID']
+        self.add(path, citation, key, disable_check, chunk_chars)
+        
+        return
+
     def add(
         self,
         path: str,
         citation: Optional[str] = None,
-        key: Optional[str] = None,
+        key: Optional[str] = None, #generate key from citation
         disable_check: bool = False,
         chunk_chars: Optional[int] = 3000,
     ) -> None:
@@ -100,6 +128,7 @@ class Docs:
             raise ValueError(f"Document {path} already in collection.")
 
         if citation is None:
+            # generate citation with llm
             cite_chain = make_chain(prompt=citation_prompt, llm=self.summary_llm)
             # peak first chunk
             texts, _ = read_doc(path, "", "", chunk_chars=chunk_chars)
@@ -110,6 +139,7 @@ class Docs:
                 citation = f"Unknown, {os.path.basename(path)}, {datetime.now().year}"
 
         if key is None:
+            # generate key from citation
             # get first name and year from citation
             try:
                 author = re.search(r"([A-Z][a-z]+)", citation).group(1)
@@ -123,6 +153,8 @@ class Docs:
             except AttributeError:
                 year = ""
             key = f"{author}{year}"
+            
+        # check if key already exists
         suffix = ""
         while key + suffix in self.keys:
             # move suffix to next letter
@@ -190,9 +222,45 @@ class Docs:
         papers = [f"{d.metadata['key']}: {d.page_content}" for d in docs]
         result = chain.run(instructions=query, papers="\n".join(papers))
         return result
+    
+    def filter_dict(d: dict, keys: list) -> dict:
+        return {k: v for k, v in d.items() if k in keys}
 
     # to pickle, we have to save the index as a file
-
+    def _save_index(self) -> None:
+        """Save the index to disk."""
+        # save faiss index (text and metadata)
+        if self._faiss_index is None and len(self.docs) > 0:
+            self._build_faiss_index()
+        if self._faiss_index is not None:
+            state["_faiss_index"].save_local(self.index_path)
+        # save doc dict {filepaths: dict(keys = k, md5s = m)}
+        with open(self.index_path / "docs.pkl", "wb") as f:
+            _dict_intext = {k: self.filter_dict(v, ["key", "md5"]) for k, v in self.docs.items()}
+            pickle.dump(_dict_intext, f)
+    
+    # def _load_from_index(self, index_path = self.index_path, name = self.name) -> None:
+    #     # set index path and name
+    #     self.index_path = index_path
+    #     self.name = name
+    #     # reset docs
+    #     self.docs = dict()
+    #     self.keys = set()
+    #     self._faiss_index = None # type: Optional[FAISS]
+    #     self._doc_index = None
+    #     # load faiss index
+    #     self._faiss_index = FAISS.load_local(self.index_path, self.embeddings)
+        
+    #     if index_path = None
+    #         index_path = Path.home() / ".paperqa" / name
+    #     self.index_path = index_path
+    #     self.name = name
+    #     if embeddings is None:
+    #         embeddings = OpenAIEmbeddings()
+    #     self.embeddings = embeddings
+        
+        # Write an update function instead of this        
+    
     def __getstate__(self):
         if self._faiss_index is None and len(self.docs) > 0:
             self._build_faiss_index()
@@ -235,6 +303,17 @@ class Docs:
         key_filter: Optional[List[str]] = None,
         get_callbacks: Callable[[str], AsyncCallbackHandler] = lambda x: [],
     ) -> Answer:
+        """ Get evidence for an answer:
+        Args:
+            answer: the answer to get evidence for
+            k: the number of documents to return
+            max_sources: the maximum number of sources to return per document
+            marginal_relevance: whether to use marginal relevance or not
+            key_filter: a list of keys to filter the results by
+            get_callbacks: a function that returns a list of callbacks for a given key
+            Returns:
+                the answer with evidence"""
+                
         # special case for jupyter notebooks
         if "get_ipython" in globals() or "google.colab" in sys.modules:
             import nest_asyncio
@@ -460,3 +539,4 @@ class Docs:
         answer.references = bib_str
         answer.passages = passages
         return answer
+

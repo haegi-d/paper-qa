@@ -28,6 +28,13 @@ TextSplitter = TokenTextSplitter
 
 
 def parse_pdf(path, citation, key, chunk_chars=2000, overlap=50):
+    """Parse a document into chunks, based on page numbers (for PDFs).
+    path: path to the PDF file
+    citation: the citation string
+    key: the key of the document
+    chunk_chars: the number of characters per chunk
+    overlap: the number of characters to overlap between chunks
+    """
     import pypdf
 
     pdfFileObj = open(path, "rb")
@@ -70,6 +77,7 @@ def parse_pdf(path, citation, key, chunk_chars=2000, overlap=50):
 
 
 def parse_txt(path, citation, key, chunk_chars=2000, overlap=50, html=False):
+    """ Not working! Parse a document into chunks, based on character numbers (for txt)."""
     try:
         with open(path) as f:
             doc = f.read()
@@ -158,6 +166,19 @@ def _filehash(path):
 
 
 def read_doc(path, citation, key, chunk_chars=3000, overlap=100, disable_check=False):
+    """Read a document from a path, and split it into chunks.
+
+    Args: 
+        path: path to the document
+        citation: the citation string
+        key: the key of the document
+        chunk_chars: the number of characters per chunk
+        overlap: the number of characters to overlap between chunks
+        disable_check: if True, don't check the cache for this document
+
+    Returns:
+        A list of chunks, and a list of metadata objects.
+    """
     logger = logging.getLogger(__name__)
     logger.debug(f"Creating cache key for {path}")
     cache_key = _serialize_s(
