@@ -9,8 +9,8 @@ from langchain.cache import SQLiteCache
 from langchain.schema import Generation
 from langchain.text_splitter import TokenTextSplitter
 
-from .paths import OCR_CACHE_PATH
-from .version import __version__
+from paths import OCR_CACHE_PATH
+from version import __version__
 
 OCR_CACHE = None
 

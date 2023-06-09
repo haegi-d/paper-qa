@@ -4,8 +4,8 @@ from langchain.chat_models import ChatOpenAI
 from langchain.tools import BaseTool
 from rmrkl import ChatZeroShotAgent, RetryAgentExecutor
 
-from .docs import Answer, Docs
-from .qaprompts import make_chain, select_paper_prompt
+from docs import Answer, Docs
+from qaprompts import make_chain, select_paper_prompt
 
 
 def status(answer: Answer, docs: Docs):

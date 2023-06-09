@@ -19,30 +19,17 @@ from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.llms.base import LLM
 from langchain.vectorstores import FAISS
 
-from .paths import CACHE_PATH
-from .qaprompts import (citation_prompt, make_chain, qa_prompt, search_prompt,
+from paths import CACHE_PATH
+from qaprompts import (citation_prompt, make_chain, qa_prompt, search_prompt,
                         select_paper_prompt, summary_prompt)
-from .readers import read_doc
-from .types import Answer, Context
-from .utils import maybe_is_text, md5sum
-# import pickle
+from readers import read_doc
+from formats import Answer, Context
+from utils import maybe_is_text, md5sum
+from refdb import create_mla_citation
+import pickle
 
 os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
 langchain.llm_cache = SQLiteCache(CACHE_PATH)
-
-def create_mla_citation(citation_dict: dict
-                        ) -> str:
-    citation_parts = []
-    citation_parts.append(f"{extract_first_author(citation_dict)} et al.,")
-    citation_parts.append(f"\"{citation_dict['title']}\",")
-    citation_parts.append(f"*{citation_dict['journal']}*,")
-    citation_parts.append(f"({citation_dict['year']}),")
-    citation_parts.append(f"{citation_dict['creationdate']},")
-    citation_parts.append(f"{citation_dict['owner']}")
-
-    mla_citation = " ".join(citation_parts)
-
-    return mla_citation
 
 class Docs:
     """A collection of documents to be used for answering questions."""
@@ -90,15 +77,15 @@ class Docs:
         if llm is None:
             llm = "gpt-3.5-turbo"
         if type(llm) is str:
-            llm = ChatOpenAI(temperature=0.1, model_name=llm)
+            llm = ChatOpenAI(temperature=1, model_name=llm)
         if type(summary_llm) is str:
-            summary_llm = ChatOpenAI(temperature=0.1, model_name=summary_llm)
+            summary_llm = ChatOpenAI(temperature=1, model_name=summary_llm)
         self.llm = llm
         if summary_llm is None:
             summary_llm = llm
         self.summary_llm = summary_llm
 
-    def add_from_RefDB(self, 
+    def add_from_citation(self, 
                        citation_dict: dict,
                        disable_check: bool = False,
                        chunk_chars: Optional[int] = 3000,
@@ -135,9 +122,19 @@ class Docs:
 
         # first check to see if we already have this document
         # this way we don't make api call to create citation on file we already have
-        hash = md5sum(path)
-        if hash in [d["hash"] for d in self.docs]:
-            raise ValueError(f"Document {path} already in collection.")
+        
+        # assert type(path) is str, f"Path ({path}) must be a string, not {type(path)}"
+        if type(path) is not str:
+            print(f"Document {path} does not exist. Skipping.")
+            return
+        # assert os.path.exists(path), f"Document {path} could not be found."
+        
+        try:
+            hash = md5sum(path)
+            if hash in [d["hash"] for d in self.docs]:
+                raise ValueError(f"Document {path} already in collection.")
+        except:
+            print(f"Document {path} does not work hash.")
 
         if citation is None:
             # generate citation with llm
@@ -167,17 +164,22 @@ class Docs:
                 year = ""
             key = f"{author}{year}"
         key = self.get_unique_key(key)
-        texts, metadata = read_doc(
-            path, citation, key, chunk_chars=chunk_chars)
-        # loose check to see if document was loaded
-        #
-        if len("".join(texts)) < 10 or (
-            not disable_check and not maybe_is_text("".join(texts))
-        ):
-            raise ValueError(
-                f"This does not look like a text document: {path}. Path disable_check to ignore this error."
-            )
-        self.add_texts(texts, metadata, hash)
+        
+        try:
+            texts, metadata = read_doc(
+                path, citation, key, chunk_chars=chunk_chars)
+            # loose check to see if document was loaded
+            #
+            if len("".join(texts)) < 10 or (
+                not disable_check and not maybe_is_text("".join(texts))
+            ):
+                raise ValueError(
+                    f"This does not look like a text document: {path}. Path disable_check to ignore this error."
+                )
+            self.add_texts(texts, metadata, hash)
+        except:
+            print(f"Document {path} does not work read_doc.")
+        
 
     def add_texts(
         self,
@@ -388,9 +390,25 @@ class Docs:
         key_filter: Optional[List[str]] = None,
         get_callbacks: Callable[[str], AsyncCallbackHandler] = lambda x: [],
     ) -> Answer:
+        """Get evidence for an answer. This is the async version of get_evidence.
+
+        Args:
+            answer (Answer): The answer to get evidence for.
+            k (int, optional): The number of documents to return in the max_marginal_relevance_search. Defaults to 3.
+            max_sources (int, optional): The maximum number of sources per document to return and 
+                                         max_sources * k) is the number of document to check in the similarity_search. Defaults to 5.
+            marginal_relevance (bool, optional): Whether to use marginal relevance or not. Defaults to True.
+            key_filter (Optional[List[str]], optional): A list of keys to filter the results by. Defaults to None.
+            get_callbacks (Callable[[str], AsyncCallbackHandler], optional): A function that returns a list of callbacks for a given key. Defaults to lambda x: [].
+            
+        Returns:
+            Answer: The answer with evidence.
+        """
+        
         if len(self.docs) == 0:
             return answer
         if self._faiss_index is None:
+            print("Build faiss index")
             self._build_faiss_index()
         _k = k
         if key_filter is not None:
@@ -398,7 +416,7 @@ class Docs:
         # want to work through indices but less k
         if marginal_relevance:
             docs = self._faiss_index.max_marginal_relevance_search(
-                answer.question, k=_k, fetch_k=5 * _k
+                answer.question, k=_k, fetch_k=max_sources * _k
             )
         else:
             docs = self._faiss_index.similarity_search(
@@ -406,7 +424,8 @@ class Docs:
             )
 
         async def process(doc):
-            if key_filter is not None and doc.metadata["dockey"] not in key_filter:
+            """ Process a single document. """
+            if key_filter is not None and doc.metadata["dockey"] not in key_filter: # changed to 'in'    instead of 'not in' check if key is in key_filter
                 return None, None
             # check if it is already in answer (possible in agent setting)
             if doc.metadata["key"] in [c.key for c in answer.contexts]:
@@ -434,7 +453,9 @@ class Docs:
             results = await asyncio.gather(*[process(doc) for doc in docs])
         # filter out failures
         results = [r for r in results if r[0] is not None]
+        print(results)
         answer.tokens += sum([cb.total_tokens for _, cb in results])
+        print(answer.tokens)
         answer.cost += sum([cb.total_cost for _, cb in results])
         contexts = [c for c, _ in results if c is not None]
         if len(contexts) == 0:
@@ -488,6 +509,26 @@ class Docs:
         key_filter: Optional[bool] = None,
         get_callbacks: Callable[[str], AsyncCallbackHandler] = lambda x: [],
     ) -> Answer:
+        """Query the collection of documents. This is the main entry point for PaperQA. 
+        It will return an answer to the question. If the answer is not satisfactory, 
+        you can call the get_evidence method to get more evidence. 
+        If you want to see the evidence, you can call the get_evidence_formatted method. 
+        If you want to see the evidence and the answer, you can call the get_answer_formatted method. 
+        If you want to see the answer, you can call the get_answer method.
+
+        Args:
+            query (str): The question to answer.
+            k (int, optional): The number of documents to use for answering the question. Defaults to 10.
+            max_sources (int, optional): The maximum number of sources to use for answering the question. Defaults to 5.
+            length_prompt (str, optional): The length of the answer. Defaults to "about 100 words".
+            marginal_relevance (bool, optional): Whether to use marginal relevance or not. Defaults to True.
+            answer (Optional[Answer], optional): The answer to use. Defaults to None.
+            key_filter (Optional[bool], optional): Whether to filter the results by key. Defaults to None.
+            get_callbacks (Callable[[str], AsyncCallbackHandler], optional): A function that returns a list of callbacks for a given key. Defaults to lambda x: [].
+
+        Returns:
+            Answer: The answer to the question.
+        """
         # special case for jupyter notebooks
         if "get_ipython" in globals() or "google.colab" in sys.modules:
             import nest_asyncio
@@ -517,6 +558,7 @@ class Docs:
         k: int = 10,
         max_sources: int = 5,
         length_prompt: str = "about 100 words",
+        # level: str = "pyhsics student with some prior knowledge but no expertise in this topic",
         marginal_relevance: bool = True,
         answer: Optional[Answer] = None,
         key_filter: Optional[bool] = None,
@@ -555,6 +597,7 @@ class Docs:
                 question=query,
                 context_str=context_str,
                 length=length_prompt,
+                # level = level,
                 callbacks=callbacks,
             )
             answer.tokens += cb.total_tokens

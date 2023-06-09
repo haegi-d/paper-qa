@@ -23,7 +23,7 @@ summary_prompt = prompts.PromptTemplate(
     "Question: {question}\n"
     "Relevant Information Summary:",
 )
-
+# level: str = "pyhsics student with some prior knowledge but no expertise in this topic"
 
 qa_prompt = prompts.PromptTemplate(
     input_variables=["question", "context_str", "length"],
@@ -31,15 +31,36 @@ qa_prompt = prompts.PromptTemplate(
     "for the question below based on the provided context. "
     "If the context provides insufficient information, "
     'reply "I cannot answer". '
-    "For each sentence in your answer, indicate which sources most support it "
-    "via valid citation markers at the end of sentences, like (Example2012). "
+    "If you can answer use the following structure:"
+    "1. Start with 'Confidence Level:' and state your self-assessed confidence level in your answer: high, medium, or low. "
+    " (high: consice answer based on many sources, medium: answer has uncertainties and is based on fewer references"
+    " , low: significant uncertainties and based on limited references)."
+    "2. Give your answer and for each statement in your answer indicate which sources most support it " #changed sentence to statement
+    "via valid citation markers at the end of sentences, like (Example2012). Try to use base your answer on multiple sources. "
     "Answer in an unbiased, comprehensive, and scholarly tone. "
-    "Complete your answer with a concluding 1-2 sentences, which may be opinionated. "
+    "Bear in mind you answer to a pyhsics student with some prior knowledge but no expertise in this topic."
+    "3. Finish of with 'In short:' and conclude your answer in 1-2 sentences."
     "Use Markdown for formatting code or text, and try to use direct quotes to support arguments.\n\n"
-    "{context_str}\n"
+    "Context: {context_str}\n"
     "Question: {question}\n"
     "Answer: ",
 )
+
+# qa_prompt = prompts.PromptTemplate(
+#     input_variables=["question", "context_str", "length"],
+#     template="Write an answer ({length}) "
+#     "for the question below based on the provided context. "
+#     "If the context provides insufficient information, "
+#     'reply "I cannot answer". '
+#     "For each sentence in your answer, indicate which sources most support it " 
+#     "via valid citation markers at the end of sentences, like (Example2012). "
+#     "Answer in an unbiased, comprehensive, and scholarly tone. "
+#     "Complete your answer with a concluding 1-2 sentences, which may be opinionated. "
+#     "Use Markdown for formatting code or text, and try to use direct quotes to support arguments.\n\n"
+#     "{context_str}\n"
+#     "Question: {question}\n"
+#     "Answer: ",
+# )
 
 
 search_prompt = prompts.PromptTemplate(

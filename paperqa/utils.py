@@ -3,7 +3,7 @@ import string
 
 import pypdf
 
-from .types import StrPath
+from formats import StrPath
 
 
 def maybe_is_text(s, thresh=2.5):
