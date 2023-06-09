@@ -20,11 +20,18 @@ from langchain.llms.base import LLM
 from langchain.vectorstores import FAISS
 
 from paths import CACHE_PATH
-from qaprompts import (citation_prompt, make_chain, qa_prompt, search_prompt,
-                        select_paper_prompt, summary_prompt)
+from qaprompts import (
+    citation_prompt,
+    make_chain,
+    qa_prompt,
+    search_prompt,
+    select_paper_prompt,
+    summary_prompt,
+    get_score,
+)
 from readers import read_doc
 from formats import Answer, Context
-from utils import maybe_is_text, md5sum
+from utils import maybe_is_text, md5sum, gather_with_concurrency, guess_is_4xx
 from refdb import create_mla_citation
 import pickle
 
@@ -42,6 +49,7 @@ class Docs:
         name: str = "default",
         index_path: Optional[Path] = None,
         embeddings: Optional[Embeddings] = None,
+        max_concurrent: int = 5,
     ) -> None:
         """Initialize the collection of documents.
 
@@ -52,6 +60,7 @@ class Docs:
             name: The name of the collection.
             index_path: The path to the index file IF pickled. If None, defaults to using name in $HOME/.paperqa/name
             embeddings: The embeddings to use for indexing documents. Default - OpenAI embeddings
+            max_concurrent: Number of concurrent LLM model calls to make
         """
         self.docs = []
         self.chunk_size_limit = chunk_size_limit
@@ -66,7 +75,8 @@ class Docs:
         if embeddings is None:
             embeddings = OpenAIEmbeddings()
         self.embeddings = embeddings
-        
+        self.max_concurrent = max_concurrent
+        self._deleted_keys = set()
 
     def update_llm(
         self,
@@ -74,7 +84,7 @@ class Docs:
         summary_llm: Optional[Union[LLM, str]] = None,
     ) -> None:
         """Update the LLM for answering questions."""
-        if llm is None:
+        if llm is None and os.environ.get("OPENAI_API_KEY") is not None:
             llm = "gpt-3.5-turbo"
         if type(llm) is str:
             llm = ChatOpenAI(temperature=1, model_name=llm)
@@ -117,7 +127,7 @@ class Docs:
         key: Optional[str] = None, #generate key from citation
         disable_check: bool = False,
         chunk_chars: Optional[int] = 3000,
-    ) -> None:
+    ) -> str:
         """Add a document to the collection."""
 
         # first check to see if we already have this document
@@ -137,13 +147,14 @@ class Docs:
             print(f"Document {path} does not work hash.")
 
         if citation is None:
-            # generate citation with llm
-            cite_chain = make_chain(prompt=citation_prompt, llm=self.summary_llm)
+            # skip system because it's too hesitant to answer
+            cite_chain = make_chain(
+                prompt=citation_prompt, llm=self.summary_llm, skip_system=True
+            )
             # peak first chunk
             texts, _ = read_doc(path, "", "", chunk_chars=chunk_chars)
             if len(texts) == 0:
-                raise ValueError(
-                    f"Could not read document {path}. Is it empty?")
+                raise ValueError(f"Could not read document {path}. Is it empty?")
             citation = cite_chain.run(texts[0])
             if len(citation) < 3 or "Unknown" in citation or "insufficient" in citation:
                 citation = f"Unknown, {os.path.basename(path)}, {datetime.now().year}"
@@ -195,6 +206,10 @@ class Docs:
         """
         if len(texts) != len(metadatas):
             raise ValueError("texts and metadatas must have the same length.")
+
+        if hash in [d["hash"] for d in self.docs]:
+            raise ValueError(f"Document already in collection.")
+
         key = metadatas[0]["dockey"]
         citation = metadatas[0]["citation"]
         if key in self.keys:
@@ -209,7 +224,7 @@ class Docs:
             self._faiss_index.add_embeddings(
                 list(zip(texts, text_embeddings)), metadatas=metadatas
             )
-        elif self._doc_index is not None:
+        if self._doc_index is not None:
             self._doc_index.add_texts([citation], metadatas=[{"key": key}])
         self.docs.append(
             dict(
@@ -221,6 +236,14 @@ class Docs:
             )
         )
         self.keys.add(key)
+
+    def delete(self, key: str) -> None:
+        """Delete a document from the collection."""
+        if key not in self.keys:
+            return
+        self.keys.remove(key)
+        self.docs = [doc for doc in self.docs if doc["key"] != key]
+        self._deleted_keys.add(key)
 
     def clear(self) -> None:
         """Clear the collection of documents."""
@@ -243,31 +266,60 @@ class Docs:
                 len(doc["texts"]),
                 doc["metadata"][0]["dockey"],
                 doc["metadata"][0]["citation"],
+                doc["hash"],
             )
             for doc in self.docs
         ]
 
-    def doc_match(self, query: str, k: int = 25) -> List[str]:
+#TODO remove adoc_match of it is the same as doc_match
+    async def adoc_match(
+        self, query: str, k: int = 25, callbacks: List[AsyncCallbackHandler] = []
+    ) -> List[str]:
         """Return a list of documents that match the query."""
         if len(self.docs) == 0:
             return ""
         if self._doc_index is None:
             texts = [doc["metadata"][0]["citation"] for doc in self.docs]
-            metadatas = [{"key": doc["metadata"][0]["dockey"]}
-                         for doc in self.docs]
+            metadatas = [{"key": doc["metadata"][0]["dockey"]} for doc in self.docs]
             self._doc_index = FAISS.from_texts(
                 texts, metadatas=metadatas, embedding=self.embeddings
             )
-        docs = self._doc_index.max_marginal_relevance_search(query, k=k)
+        docs = self._doc_index.max_marginal_relevance_search(
+            query, k=k + len(self._deleted_keys)
+        )
+        docs = [doc for doc in docs if doc.metadata["key"] not in self._deleted_keys]
         chain = make_chain(select_paper_prompt, self.summary_llm)
         papers = [f"{d.metadata['key']}: {d.page_content}" for d in docs]
-        result = chain.run(instructions=query, papers="\n".join(papers))
+        result = await chain.arun(
+            question=query, papers="\n".join(papers), callbacks=callbacks
+        )
         return result
     
     def filter_dict(d: dict, keys: list) -> dict:
         return {k: v for k, v in d.items() if k in keys}
 
-    # to pickle, we have to save the index as a file
+    def doc_match(
+        self, query: str, k: int = 25, callbacks: List[AsyncCallbackHandler] = []
+    ) -> List[str]:
+        """Return a list of documents that match the query."""
+        if len(self.docs) == 0:
+            return ""
+        if self._doc_index is None:
+            texts = [doc["metadata"][0]["citation"] for doc in self.docs]
+            metadatas = [{"key": doc["metadata"][0]["dockey"]} for doc in self.docs]
+            self._doc_index = FAISS.from_texts(
+                texts, metadatas=metadatas, embedding=self.embeddings
+            )
+        docs = self._doc_index.max_marginal_relevance_search(
+            query, k=k + len(self._deleted_keys)
+        )
+        docs = [doc for doc in docs if doc.metadata["key"] not in self._deleted_keys]
+        chain = make_chain(select_paper_prompt, self.summary_llm)
+        papers = [f"{d.metadata['key']}: {d.page_content}" for d in docs]
+        result = chain.run(
+            question=query, papers="\n".join(papers), callbacks=callbacks
+        )
+        return result
     def _save_index(self) -> None:
         """Save the index to disk."""
         # save faiss index (text and metadata)
@@ -313,22 +365,24 @@ class Docs:
     def __setstate__(self, state):
         self.__dict__.update(state)
         try:
-            self._faiss_index = FAISS.load_local(
-                self.index_path, self.embeddings)
+            self._faiss_index = FAISS.load_local(self.index_path, self.embeddings)
         except:
             # they use some special exception type, but I don't want to import it
             self._faiss_index = None
         if not hasattr(self, "_doc_index"):
             self._doc_index = None
+        # must be a better way to have backwards compatibility
+        if not hasattr(self, "_deleted_keys"):
+            self._deleted_keys = set()
+        if not hasattr(self, "max_concurrent"):
+            self.max_concurrent = 5
         self.update_llm(None, None)
 
     def _build_faiss_index(self):
         if self._faiss_index is None:
-            texts = reduce(lambda x, y: x + y,
-                           [doc["texts"] for doc in self.docs], [])
+            texts = reduce(lambda x, y: x + y, [doc["texts"] for doc in self.docs], [])
             text_embeddings = reduce(
-                lambda x, y: x + y, [doc["text_embeddings"]
-                                     for doc in self.docs], []
+                lambda x, y: x + y, [doc["text_embeddings"] for doc in self.docs], []
             )
             metadatas = reduce(
                 lambda x, y: x + y, [doc["metadata"] for doc in self.docs], []
@@ -407,11 +461,13 @@ class Docs:
         
         if len(self.docs) == 0:
             return answer
+        if key_filter is not None:
+            answer.key_filter = key_filter
         if self._faiss_index is None:
             print("Build faiss index")
             self._build_faiss_index()
         _k = k
-        if key_filter is not None:
+        if answer.key_filter is not None:
             _k = k * 10  # heuristic
         # want to work through indices but less k
         if marginal_relevance:
@@ -422,10 +478,23 @@ class Docs:
             docs = self._faiss_index.similarity_search(
                 answer.question, k=_k, fetch_k=5 * _k
             )
+        # ok now filter
+        if answer.key_filter is not None:
+            # I realize that by testing for existence
+            # in strings that weird cases can
+            # happen - like FooBar can match FooBar2023
+            # but remember there are later checks
+            # The risk of explicitly parsing is that the
+            # language model may not give back in predictable
+            # format (e.g., - "FooBar and BarSoo are good papers")
+            docs = [doc for doc in docs if doc.metadata["dockey"] in answer.key_filter][
+                :k
+            ]
 
         async def process(doc):
             """ Process a single document. """
-            if key_filter is not None and doc.metadata["dockey"] not in key_filter: # changed to 'in'    instead of 'not in' check if key is in key_filter
+            if doc.metadata["dockey"] in self._deleted_keys: # changed to 'in'    instead of 'not in' check if key is in key_filter
+            # if key_filter is not None and doc.metadata["dockey"] not in key_filter:
                 return None, None
             # check if it is already in answer (possible in agent setting)
             if doc.metadata["key"] in [c.key for c in answer.contexts]:
@@ -434,23 +503,38 @@ class Docs:
                 "evidence:" + doc.metadata["key"]
             )
             summary_chain = make_chain(summary_prompt, self.summary_llm)
-            c = Context(
-                key=doc.metadata["key"],
-                citation=doc.metadata["citation"],
-                context=await summary_chain.arun(
+            # This is dangerous because it
+            # could mask errors that are important
+            # I also cannot know what the exception
+            # type is because any model could be used
+            # my best idea is see if there is a 4XX
+            # http code in the exception
+            try:
+                context = await summary_chain.arun(
                     question=answer.question,
                     context_str=doc.page_content,
                     citation=doc.metadata["citation"],
                     callbacks=callbacks,
-                ),
+                )
+            except Exception as e:
+                if guess_is_4xx(e):
+                    return None, None
+                raise e
+            c = Context(
+                key=doc.metadata["key"],
+                citation=doc.metadata["citation"],
+                context=context,
                 text=doc.page_content,
+                score=get_score(context),
+                dockey=doc.metadata["dockey"],
             )
-            if "Not applicable" not in c.context:
-                return c, cb
+            if "not applicable" not in c.context.casefold():
+                return c, callbacks[0]
             return None, None
 
-        with get_openai_callback() as cb:
-            results = await asyncio.gather(*[process(doc) for doc in docs])
+        results = await gather_with_concurrency(
+            self.max_concurrent, *[process(doc) for doc in docs]
+        )
         # filter out failures
         results = [r for r in results if r[0] is not None]
         print(results)
@@ -460,7 +544,7 @@ class Docs:
         contexts = [c for c, _ in results if c is not None]
         if len(contexts) == 0:
             return answer
-        contexts = sorted(contexts, key=lambda x: len(x.context), reverse=True)
+        contexts = sorted(contexts, key=lambda x: x.score, reverse=True)
         contexts = contexts[:max_sources]
         # add to answer (if not already there)
         keys = [c.key for c in answer.contexts]
@@ -569,17 +653,18 @@ class Docs:
         if answer is None:
             answer = Answer(query)
         if len(answer.contexts) == 0:
-            if key_filter or (key_filter is None and len(self.docs) > 5):
-                with get_openai_callback() as cb:
-                    keys = self.doc_match(answer.question)
-                answer.tokens += cb.total_tokens
-                answer.cost += cb.total_cost
+            if key_filter or (key_filter is None and len(self.docs) > max_sources):
+                callbacks = [OpenAICallbackHandler()] + get_callbacks("filter")
+                keys = await self.adoc_match(answer.question, callbacks=callbacks)
+                answer.tokens += callbacks[0].total_tokens
+                answer.cost += callbacks[0].total_cost
+                key_filter = True if len(keys) > 0 else False
+                answer.key_filter = keys
             answer = await self.aget_evidence(
                 answer,
                 k=k,
                 max_sources=max_sources,
                 marginal_relevance=marginal_relevance,
-                key_filter=keys if key_filter else None,
                 get_callbacks=get_callbacks,
             )
         context_str, contexts = answer.context, answer.contexts
@@ -591,7 +676,7 @@ class Docs:
             )
         else:
             cb = OpenAICallbackHandler()
-            callbacks = [OpenAICallbackHandler()] + get_callbacks("answer")
+            callbacks = [cb] + get_callbacks("answer")
             qa_chain = make_chain(qa_prompt, self.llm)
             answer_text = await qa_chain.arun(
                 question=query,
@@ -603,8 +688,8 @@ class Docs:
             answer.tokens += cb.total_tokens
             answer.cost += cb.total_cost
         # it still happens lol
-        if "(Foo2012)" in answer_text:
-            answer_text = answer_text.replace("(Foo2012)", "")
+        if "(Example2012)" in answer_text:
+            answer_text = answer_text.replace("(Example2012)", "")
         for c in contexts:
             key = c.key
             text = c.context

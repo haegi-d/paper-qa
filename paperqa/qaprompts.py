@@ -1,22 +1,23 @@
+import copy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import re
 
 import langchain.prompts as prompts
 from langchain.callbacks.manager import AsyncCallbackManagerForChainRun
 from langchain.chains import LLMChain
 from langchain.chat_models import ChatOpenAI
-from langchain.prompts.chat import (ChatPromptTemplate,
-                                    HumanMessagePromptTemplate)
+from langchain.prompts.chat import ChatPromptTemplate, HumanMessagePromptTemplate
 from langchain.schema import LLMResult, SystemMessage
 
 summary_prompt = prompts.PromptTemplate(
     input_variables=["question", "context_str", "citation"],
-    template="Summarize and provide direct quotes from the text below to help answer a question. "
-    "Do not directly answer the question, instead summarize and "
-    "quote to give evidence to help answer the question. "
-    "Do not use outside sources. "
-    'Reply with "Not applicable" if the text is unrelated to the question. '
-    "Use 150 or less words."
+    template="Summarize the text below to help answer a question. "
+    "Do not directly answer the question, instead summarize "
+    "to give evidence to help answer the question. Include direct quotes. "
+    'Reply "Not applicable" if text is irrelevant. '
+    "Use around 100 words. At the end of your response, provide a score from 1-10 on a newline "
+    "indicating relevance to question. Do not explain your score. "
     "\n\n"
     "{context_str}\n"
     "Extracted from {citation}\n"
@@ -24,7 +25,6 @@ summary_prompt = prompts.PromptTemplate(
     "Relevant Information Summary:",
 )
 # level: str = "pyhsics student with some prior knowledge but no expertise in this topic"
-
 qa_prompt = prompts.PromptTemplate(
     input_variables=["question", "context_str", "length"],
     template="Write an answer ({length}) "
@@ -62,24 +62,30 @@ qa_prompt = prompts.PromptTemplate(
 #     "Answer: ",
 # )
 
+#TODO check with Simon what he thinks about this changes
+# They changed it to " For each part of your answer, indicate which sources most support it"
+# and "If the question is subjective, provide an opinionated answer in the concluding 1-2 sentences. "
+
 
 search_prompt = prompts.PromptTemplate(
     input_variables=["question"],
     template="We want to answer the following question: {question} \n"
     "Provide three keyword searches (one search per line) "
     "that will find papers to help answer the question. Do not use boolean operators. "
+    "Provide some broad and some specific searches. "
     "Recent years are 2021, 2022, 2023.\n\n"
     "1.",
 )
 
 
 select_paper_prompt = prompts.PromptTemplate(
-    input_variables=["instructions", "papers"],
-    template="Select papers according to instructions below. "
+    input_variables=["question", "papers"],
+    template="Select papers to help answer the question below. "
     "Papers are listed as $KEY: $PAPER_INFO. "
     "Return a list of keys, separated by commas. "
-    'Return "None", if no papers are applicable. \n\n'
-    "Instructions: {instructions}\n\n"
+    'Return "None", if no papers are applicable. '
+    "Choose papers that are relevant, from reputable sources, and timely. \n\n"
+    "Question: {question}\n\n"
     "{papers}\n\n"
     "Selected keys:",
 )
@@ -92,7 +98,7 @@ def _get_datetime():
 
 citation_prompt = prompts.PromptTemplate(
     input_variables=["text"],
-    template="Provide a possible citation for the following text in MLA Format. Today's date is {date}\n"
+    template="Provide the citation for the following text in MLA Format. Today's date is {date}\n"
     "{text}\n\n"
     "Citation:",
     partial_variables={"date": _get_datetime},
@@ -114,14 +120,27 @@ class FallbackLLMChain(LLMChain):
             return self.generate(input_list, run_manager=run_manager)
 
 
-def make_chain(prompt, llm):
+def make_chain(prompt, llm, skip_system=False):
     if type(llm) == ChatOpenAI:
         system_message_prompt = SystemMessage(
-            content="You are a scholarly researcher that answers in an unbiased, scholarly tone. "
-            "You sometimes refuse to answer if there is insufficient information.",
+            content="Answer in an unbiased, concise, scholarly tone. "
+            "You may refuse to answer if there is insufficient information. "
+            "If there are ambiguous terms or acronyms, first define them. ",
         )
         human_message_prompt = HumanMessagePromptTemplate(prompt=prompt)
-        prompt = ChatPromptTemplate.from_messages(
-            [system_message_prompt, human_message_prompt]
-        )
+        if skip_system:
+            prompt = ChatPromptTemplate.from_messages([human_message_prompt])
+        else:
+            prompt = ChatPromptTemplate.from_messages(
+                [system_message_prompt, human_message_prompt]
+            )
     return FallbackLLMChain(prompt=prompt, llm=llm)
+
+
+def get_score(text):
+    score = re.search(r"[sS]core[:is\s]+([0-9]+)", text)
+    if score:
+        return int(score.group(1))
+    if len(text) < 100:
+        return 1
+    return 5
