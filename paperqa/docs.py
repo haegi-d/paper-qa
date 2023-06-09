@@ -271,29 +271,28 @@ class Docs:
             for doc in self.docs
         ]
 
-#TODO remove adoc_match of it is the same as doc_match
-    async def adoc_match(
-        self, query: str, k: int = 25, callbacks: List[AsyncCallbackHandler] = []
-    ) -> List[str]:
-        """Return a list of documents that match the query."""
-        if len(self.docs) == 0:
-            return ""
-        if self._doc_index is None:
-            texts = [doc["metadata"][0]["citation"] for doc in self.docs]
-            metadatas = [{"key": doc["metadata"][0]["dockey"]} for doc in self.docs]
-            self._doc_index = FAISS.from_texts(
-                texts, metadatas=metadatas, embedding=self.embeddings
-            )
-        docs = self._doc_index.max_marginal_relevance_search(
-            query, k=k + len(self._deleted_keys)
-        )
-        docs = [doc for doc in docs if doc.metadata["key"] not in self._deleted_keys]
-        chain = make_chain(select_paper_prompt, self.summary_llm)
-        papers = [f"{d.metadata['key']}: {d.page_content}" for d in docs]
-        result = await chain.arun(
-            question=query, papers="\n".join(papers), callbacks=callbacks
-        )
-        return result
+    # async def adoc_match(
+    #     self, query: str, k: int = 25, callbacks: List[AsyncCallbackHandler] = []
+    # ) -> List[str]:
+    #     """Return a list of documents that match the query."""
+    #     if len(self.docs) == 0:
+    #         return ""
+    #     if self._doc_index is None:
+    #         texts = [doc["metadata"][0]["citation"] for doc in self.docs]
+    #         metadatas = [{"key": doc["metadata"][0]["dockey"]} for doc in self.docs]
+    #         self._doc_index = FAISS.from_texts(
+    #             texts, metadatas=metadatas, embedding=self.embeddings
+    #         )
+    #     docs = self._doc_index.max_marginal_relevance_search(
+    #         query, k=k + len(self._deleted_keys)
+    #     )
+    #     docs = [doc for doc in docs if doc.metadata["key"] not in self._deleted_keys]
+    #     chain = make_chain(select_paper_prompt, self.summary_llm)
+    #     papers = [f"{d.metadata['key']}: {d.page_content}" for d in docs]
+    #     result = await chain.arun(
+    #         question=query, papers="\n".join(papers), callbacks=callbacks
+    #     )
+    #     return result
     
     def filter_dict(d: dict, keys: list) -> dict:
         return {k: v for k, v in d.items() if k in keys}
