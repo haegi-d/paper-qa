@@ -1,5 +1,7 @@
 from setuptools import setup
 
+# for typing
+__version__ = ""
 exec(open("paperqa/version.py").read())
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -16,13 +18,12 @@ setup(
     packages=["paperqa", "paperqa.contrib"],
     install_requires=[
         "pypdf",
-        "langchain>=0.0.172",
-        "openai>=0.27.0",
+        "langchain>=0.0.198",
+        "openai >= 0.27.8",
         "faiss-cpu",
         "PyCryptodome",
         "html2text",
-        "tiktoken",
-        "rmrkl>=0.0.2",
+        "tiktoken>=0.4.0",
     ],
     test_suite="tests",
     long_description=long_description,
@@ -33,4 +34,3 @@ setup(
         "Operating System :: OS Independent",
     ],
 )
-1
