@@ -2,6 +2,7 @@ import os
 import pickle
 import sys
 from typing import Any
+# from unittest import TestCase
 from unittest import IsolatedAsyncioTestCase
 from unittest import mock
 from importlib import reload
@@ -410,7 +411,7 @@ def test_zotera():
         return
 
 
-def test_too_much_evidence():
+def test_too_much_evidence(self):
     doc_path = "example2.txt"
     with open(doc_path, "w", encoding="utf-8") as f:
         # get wiki page about politician

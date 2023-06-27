@@ -35,11 +35,11 @@ qa_prompt = prompts.PromptTemplate(
     "1. Start with 'Confidence Level:' and state your self-assessed confidence level in your answer: high, medium, or low. "
     " (high: consice answer based on many sources, medium: answer has uncertainties and is based on fewer references"
     " , low: significant uncertainties and based on limited references)."
-    "2. Give your answer and for each statement in your answer indicate which sources most support it " #changed sentence to statement
-    "via valid citation markers at the end of sentences, like (Example2012). Try to use base your answer on multiple sources. "
+    "2. Give your answer and support each statement/sentence in your answer by citing the relevant sources. Use multiple sources if possible." #changed sentence to statement
+    "Use valid citation markers at the end of sentences, like (Example2012). " # Base your answer on multiple sources. ""
     "Answer in an unbiased, comprehensive, and scholarly tone. "
     "Bear in mind you answer to a pyhsics student with some prior knowledge but no expertise in this topic."
-    "3. Finish of with 'In short:' and conclude your answer in 1-2 sentences."
+    "3. Complete your answer with 'In short:' and a short, precise concluding sentence, which may be opinionated." #Finish of with 'In short:' and conclude your answer in 1-2 sentences."
     "Use Markdown for formatting code or text, and try to use direct quotes to support arguments.\n\n"
     "Context: {context_str}\n"
     "Question: {question}\n"

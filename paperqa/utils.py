@@ -5,7 +5,7 @@ import asyncio
 
 import pypdf
 
-from formats import StrPath
+from .formats import StrPath
 
 
 def maybe_is_text(s, thresh=2.5):
