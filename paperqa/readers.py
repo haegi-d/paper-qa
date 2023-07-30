@@ -6,6 +6,7 @@ from langchain.text_splitter import TokenTextSplitter
 
 from .types import Doc, Text
 
+# TODO Improve to extract links in text and add them to the doc object (e.g. with regex and markdown)
 
 def parse_pdf_fitz(path: Path, doc: Doc, chunk_chars: int, overlap: int) -> List[Text]:
     import fitz

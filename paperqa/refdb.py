@@ -71,20 +71,22 @@ def extract_time(entry):
 #Owner to lowercase to be able to compare them
 extract_owner = lambda entry: entry['owner'].lower()
 #1st owner
-extract_first_owner = lambda entry, owners_delimiter: re.split(owners_delimiter, entry['owner'].lower())[0]
+extract_first_owner = lambda entry, owners_delimiter= r" *[/,]+ *": re.split(owners_delimiter, entry['owner'].lower())[0]
 #Author
 extract_author = lambda entry: entry['author'].lower()
-extract_first_author = lambda entry, owners_delimiter: re.split(owners_delimiter, entry['author'])[0]
+extract_first_author = lambda entry, owners_delimiter= r" *[/,]+ *": re.split(owners_delimiter, entry['author'])[0]
 #Journal
 extract_journal = lambda entry: entry['journal'].lower()
 #Key
 extract_key = lambda entry: entry['key']
     
-def create_mla_citation(citation_dict: dict
-                        ) -> str:
+def create_mla_citation(
+    citation_dict: dict,
+    owners_delimiter = r" *[/,]+ *",
+) -> str:
     """Create a MLA citation from a dictionary containing the relevant information."""
     citation_parts = []
-    citation_parts.append(f"{extract_first_author(citation_dict)} et al.,")
+    citation_parts.append(f"{extract_first_author(citation_dict, owners_delimiter=owners_delimiter)} et al.,")
     citation_parts.append(f"\"{citation_dict['title']}\",")
     citation_parts.append(f"*{citation_dict['journal']}*,")
     citation_parts.append(f"({citation_dict['year']}),")
@@ -152,3 +154,4 @@ if __name__=="__main__":
     pdf_dir = "//group-data.phys.ethz.ch/qudev/PaperArchive/"
     citations = load_bibtex_entries(keys, bib_path=bib_path, pdf_dir=pdf_dir)
     print(citations)
+    print(create_mla_citation(citations[0]))

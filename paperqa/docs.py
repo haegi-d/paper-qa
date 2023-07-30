@@ -158,6 +158,22 @@ class Docs(BaseModel, arbitrary_types_allowed=True, smart_union=True):
                 dockey=dockey,
                 chunk_chars=chunk_chars,
             )
+            
+    def add_from_citation(
+        self, 
+        citation_dict: dict,
+        disable_check: bool = False,
+        chunk_chars: Optional[int] = 3000,
+    ) -> None:
+        """Add documents of a citation_dict extracted from the reference database."""
+        from .refdb import create_mla_citation
+        
+        path = citation_dict['file']
+        citation = create_mla_citation(citation_dict)
+        docname = citation_dict['ID']
+        self.add(path, citation, docname, disable_check, chunk_chars)
+        
+        return
 
     def add(
         self,
@@ -168,7 +184,13 @@ class Docs(BaseModel, arbitrary_types_allowed=True, smart_union=True):
         dockey: Optional[DocKey] = None,
         chunk_chars: int = 3000,
     ) -> Optional[str]:
-        """Add a document to the collection."""
+        """Add a document to the collection.
+        
+        path = path to file
+        citation = citation for the document
+        docname = name of the document
+        """
+        
         if dockey is None:
             dockey = md5sum(path)
         if citation is None:
@@ -205,6 +227,7 @@ class Docs(BaseModel, arbitrary_types_allowed=True, smart_union=True):
                 year = match.group(1)  # type: ignore
             docname = f"{author}{year}"
         docname = self._get_unique_name(docname)
+        #add document to collection
         doc = Doc(docname=docname, citation=citation, dockey=dockey)
         texts = read_doc(path, doc, chunk_chars=chunk_chars, overlap=100)
         # loose check to see if document was loaded
@@ -245,6 +268,7 @@ class Docs(BaseModel, arbitrary_types_allowed=True, smart_union=True):
         else:
             text_embeddings = cast(List[List[float]], [t.embeddings for t in texts])
         if self.texts_index is not None:
+            # Run more texts through the embeddings and add to the vectorstore.
             try:
                 # TODO: Simplify - super weird
                 vec_store_text_and_embeddings = list(
@@ -596,3 +620,4 @@ class Docs(BaseModel, arbitrary_types_allowed=True, smart_union=True):
             )
 
         return answer
+    

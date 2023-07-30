@@ -18,15 +18,15 @@ CallbackFactory = Callable[[str], Union[None, List[BaseCallbackHandler]]]
 
 
 class Doc(BaseModel):
-    docname: str
-    citation: str
-    dockey: DocKey
+    docname: str #docname is the name of the document, e.g., Author2020
+    citation: str #citation is the formatted citation of the document
+    dockey: DocKey #dockey is a unique identifier for a document (hash)
 
 
 class Text(BaseModel):
-    text: str
-    name: str
-    doc: Doc
+    text: str #extracted text
+    name: str # "{doc.docname} pages {pg}", e.g., "doc1 pages 1-3"
+    doc: Doc #doc object
     embeddings: Optional[List[float]] = None
 
 
